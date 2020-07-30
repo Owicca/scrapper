@@ -1,12 +1,5 @@
 package main
 
-/*
-1. request cli url
-2. save html to a file cache
-3. save extracted urls to a different file cache than 2
-4. request every page and save the file to a folder "dest"
-*/
-
 import (
 	"errors"
 	"flag"
