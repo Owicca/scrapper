@@ -11,23 +11,21 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
+
+	"scrapper/util"
 
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/net/html"
 )
 
 var (
-	base       string
-	userAgents = map[string]string{
-		"win_ff": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:76.0) Gecko/20100101 Firefox/76.0",
-		"win_ch": "Mozilla/5.0 (Windows NT 10.0; ) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4086.0 Safari/537.36",
-		"nix_ff": "Mozilla/5.0 (X11; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0",
-		"nix_ch": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.100 Safari/537.36",
-	}
+	url               string
 	client            *http.Client
 	hrefsCachePath    = "./hrefs.txt"
 	mainHtmlCachePath = "./mainHtml.html"
@@ -35,25 +33,21 @@ var (
 )
 
 func main() {
-	flag.StringVar(&base, "base-url", "https://swapi.dev/api/", "base page url")
+	flag.StringVar(&url, "url", "https://swapi.dev/api/", "page url")
 	flag.Parse()
 
-	//client = &http.Client{}
+	client = &http.Client{}
 
-	//html_str, err := getPage(client, base)
-	//if err != nil {
-	//	fmt.Println(err)
-	//	os.Exit(1)
-	//}
-	//if _, err := cacheBasePage(html_str, mainHtmlCachePath); err != nil {
-	//	fmt.Printf("Could not cache base page (%s)", err)
-	//}
-	html_byte, err := ioutil.ReadFile(mainHtmlCachePath)
+	util.CheckDir(imageFolderPath)
+
+	html_str, err := util.GetPage(client, url)
 	if err != nil {
-		fmt.Printf("Could not read file %s (%s)", base, err)
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	html_str := string(html_byte)
+	if _, err := util.CachePage(html_str, mainHtmlCachePath); err != nil {
+		fmt.Printf("Could not cache page (%s)", err)
+	}
 
 	q, err := goquery.NewDocumentFromReader(strings.NewReader(html_str))
 	if err != nil {
@@ -66,78 +60,81 @@ func main() {
 		fmt.Printf("Could not cache hrefs (%s)", err)
 	}
 
-	//processImagePage(hrefs.Nodes[0].Attr[0].Val)
-	//for _, elem := range hrefs.Nodes {
-	//	for _, attr := range elem.Attr {
-	//		if attr.Key == "href" {
-	//			processImagePage(attr.Val)
-	//		}
-	//	}
-	//}
+	for _, elem := range hrefs.Nodes {
+		for _, attr := range elem.Attr {
+			if attr.Key == "href" {
+				go processImagePage(attr.Val)
+				time.Sleep(time.Second * 5)
+			}
+		}
+	}
 }
 
-func downloadImage(imgUrl string) (bool, error) {
-	fmt.Printf("Trying to download from '%s' to '%s'", imgUrl, imageFolderPath)
-	return true, nil
-}
-
-func processImagePage(url string) (bool, error) {
-	html_str, err := getPage(client, url)
+func downloadImage(client *http.Client, imgUrl string, dest string) (string, error) {
+	fmt.Printf("Download image '%s'\n", imgUrl)
+	substrs := strings.Split(imgUrl, "/")
+	imgPath := filepath.Join(dest, substrs[len(substrs)-1])
+	fl, err := os.Create(imgPath)
 	if err != nil {
-		return false, err
+		return "", errors.New(fmt.Sprintf("Could not create image '%s' (%s)", imgPath, err))
 	}
-	if _, err := cacheBasePage(html_str, "./first.html"); err != nil {
-		fmt.Printf("Could not cache base page (%s)", err)
-	}
+	defer fl.Close()
 
-	q, err := goquery.NewDocumentFromReader(strings.NewReader(html_str))
-	if err != nil {
-		return false, errors.New(fmt.Sprintf("Could not load document in goquery (%s)", q))
-	}
-
-	imgUrl := q.Find("#img").Nodes[0].Attr[0].Val
-	fmt.Printf("%+v", imgUrl)
-	//if _, err := downloadImage(imgUrl); err != nil {
-	//	return false, errors.New(fmt.Sprintf("Could not download image '%s' (%s)", imgUrl, err))
-	//}
-
-	return true, nil
-}
-
-func getPage(client *http.Client, url string) (string, error) {
-	request, err := http.NewRequest("GET", url, nil)
-	request.Header.Add("User-Agent", userAgents["win_ff"])
+	request, _ := http.NewRequest("GET", imgUrl, nil)
+	request.Header.Add("User-Agent", util.UserAgents["win_ff"])
 
 	res, err := client.Do(request)
 	if err != nil {
 		return "", errors.New(fmt.Sprintf("Could not get page (%s)", err))
 	}
 	defer res.Body.Close()
-
-	body, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return "", errors.New(fmt.Sprintf("Could not read body of response (%s)", err))
+	if _, err := io.Copy(fl, res.Body); err != nil {
+		return "", errors.New(fmt.Sprintf("Could not write to file '%s' (%s)", imgPath, err))
 	}
 
-	return string(body), nil
+	return imgPath, nil
 }
 
-func cacheBasePage(html_string string, path string) (bool, error) {
-	fl, err := getCacheFile(path)
+func processImagePage(url string) (bool, error) {
+	fmt.Printf("Process image '%s'\n", url)
+	html_str, err := util.GetPage(client, url)
 	if err != nil {
 		return false, err
 	}
+	//if _, err := util.CachePage(html_str, "./first.html"); err != nil {
+	//	fmt.Printf("Could not cache page (%s)", err)
+	//}
 
-	_, err = fl.WriteString(html_string)
+	q, err := goquery.NewDocumentFromReader(strings.NewReader(html_str))
 	if err != nil {
-		return false, errors.New(fmt.Sprintf("Could not write '%s' to '%s' (%s)", html_string, path, err))
+		return false, errors.New(fmt.Sprintf("Could not load document in goquery (%s)", q))
+	}
+
+	imgList := q.Find("#img").Nodes
+	if len(imgList) < 1 {
+		// create a custom error
+		// check if this specific error is thrown
+		// push this url to the back of a queue to be retried later
+		return false, errors.New(fmt.Sprintf("No image found in page '%s'", url))
+	} else if len(imgList) > 1 {
+		// html structure changed
+		return false, errors.New(fmt.Sprintf("Multiple images found in page '%s'", url))
+	}
+
+	for _, attr := range imgList[0].Attr {
+		if attr.Key == "src" {
+			if _, err := downloadImage(client, attr.Val, imageFolderPath); err != nil {
+				return false, errors.New(fmt.Sprintf("Could not download image '%s' (%s)", attr.Val, err))
+			}
+		}
 	}
 
 	return true, nil
 }
 
 func cacheHrefs(hrefs []*html.Node, path string) (bool, error) {
-	fl, err := getCacheFile(path)
+	fmt.Println("Cache hrefs")
+	fl, err := util.GetCacheFile(path)
 	if err != nil {
 		return false, err
 	}
@@ -154,21 +151,4 @@ func cacheHrefs(hrefs []*html.Node, path string) (bool, error) {
 	}
 
 	return true, nil
-}
-
-func getCacheFile(path string) (*os.File, error) {
-	var fl *os.File
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fl, err = os.Create(path)
-		if err != nil {
-			return nil, errors.New(fmt.Sprintf("Could not create '%s' (%s)", path, err))
-		}
-	} else {
-		fl, err = os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, os.ModeAppend)
-		if err != nil {
-			return nil, errors.New(fmt.Sprintf("Could not open '%s' (%s)", path, err))
-		}
-	}
-
-	return fl, nil
 }
