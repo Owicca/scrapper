@@ -1,12 +1,29 @@
 package util
 
 import (
-	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 )
+
+var UserAgents = map[string]string{
+	"win_ff": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:76.0) Gecko/20100101 Firefox/76.0",
+	"win_ch": "Mozilla/5.0 (Windows NT 10.0; ) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4086.0 Safari/537.36",
+	"nix_ff": "Mozilla/5.0 (X11; Linux x86_64; rv:75.0) Gecko/20100101 Firefox/75.0",
+	"nix_ch": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.100 Safari/537.36",
+}
+
+type Header struct {
+	Key   string
+	Value string
+}
+type RequestOptions struct {
+	Client  *http.Client
+	Url     string
+	Headers []Header
+}
 
 func GetCacheFile(path string) (*os.File, error) {
 	fl, err := CheckFile(path)
@@ -17,20 +34,25 @@ func GetCacheFile(path string) (*os.File, error) {
 	return fl, nil
 }
 
-func GetPage(client *http.Client, url string) (string, error) {
-	fmt.Printf("Downloading html from '%s'\n", url)
-	request, err := http.NewRequest("GET", url, nil)
-	request.Header.Add("User-Agent", UserAgents["win_ff"])
-
-	res, err := client.Do(request)
+func GetPage(options *RequestOptions) (string, error) {
+	log.Printf("Downloading html from '%s'\n", options.Url)
+	request, err := http.NewRequest("GET", options.Url, nil)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("Could not get page (%s)", err))
+		return "", fmt.Errorf("Could not create a request object (%s)", err)
+	}
+	for _, header := range options.Headers {
+		request.Header.Add(header.Key, header.Value)
+	}
+
+	res, err := options.Client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("Could not get page (%s)", err)
 	}
 	defer res.Body.Close()
 
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return "", errors.New(fmt.Sprintf("Could not read body of response (%s)", err))
+		return "", fmt.Errorf("Could not read body of response (%s)", err)
 	}
 
 	return string(body), nil
@@ -44,7 +66,7 @@ func CachePage(html_string string, path string) (bool, error) {
 
 	_, err = fl.WriteString(html_string)
 	if err != nil {
-		return false, errors.New(fmt.Sprintf("Could not write '%s' to '%s' (%s)", html_string, path, err))
+		return false, fmt.Errorf("Could not write '%s' to '%s' (%s)", html_string, path, err)
 	}
 
 	return true, nil
@@ -53,8 +75,7 @@ func CachePage(html_string string, path string) (bool, error) {
 func GetCachedPage(filePath string) string {
 	html_byte, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		fmt.Printf("Could not read file %s (%s)", filePath, err)
-		os.Exit(1)
+		log.Fatalf("Could not read file %s (%s)", filePath, err)
 	}
 	return string(html_byte)
 }
@@ -62,7 +83,7 @@ func GetCachedPage(filePath string) string {
 func CheckDir(dirPath string) (bool, error) {
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		if err = os.MkdirAll(dirPath, 0750); err != nil {
-			return false, errors.New(fmt.Sprintf("Could not create '%s' (%s)", dirPath, err))
+			return false, fmt.Errorf("Could not create '%s' (%s)", dirPath, err)
 		}
 	}
 
@@ -75,12 +96,12 @@ func CheckFile(path string) (*os.File, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		fl, err = os.Create(path)
 		if err != nil {
-			return nil, errors.New(fmt.Sprintf("Could not create '%s' (%s)", path, err))
+			return nil, fmt.Errorf("Could not create '%s' (%s)", path, err)
 		}
 	} else {
 		fl, err = os.OpenFile(path, os.O_TRUNC|os.O_WRONLY, os.ModeAppend)
 		if err != nil {
-			return nil, errors.New(fmt.Sprintf("Could not open '%s' (%s)", path, err))
+			return nil, fmt.Errorf("Could not open '%s' (%s)", path, err)
 		}
 	}
 
